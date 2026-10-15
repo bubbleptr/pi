@@ -1198,3 +1198,65 @@ describe("tool progress and lifetime", () => {
 		await harness.close(context);
 	});
 });
+
+const TRUNCATED =
+	"Tool call was not executed because the response was truncated (max output tokens). Re-issue the tool call with complete arguments.";
+
+describe("unexecuted tool calls", () => {
+	it("records a truncation error for tool calls on a length stop and does not run them", async () => {
+		const setup = chatSetup();
+		const executed: string[] = [];
+		addTool(
+			setup.registry,
+			tool("echo", async () => {
+				executed.push("ran");
+				return { output: [] };
+			}),
+		);
+		let followup = "";
+		setup.faux.setResponses([
+			fauxAssistantMessage(
+				[fauxToolCall("echo", { text: "hi" }, { id: "c1" }), fauxToolCall("echo", { text: "yo" }, { id: "c2" })],
+				{ stopReason: "length" },
+			),
+			(request) => {
+				followup = JSON.stringify(request.messages);
+				return DONE;
+			},
+		]);
+		const { harness, root } = await openChat(new MemoryStorage(), setup);
+		const first = await (await root.submit({ type: "input", content: "go" }, context)).wait(context);
+		expect(first.status).toBe("done");
+		expect(executed).toEqual([]);
+		const entries = await allEntries(root);
+		const [left, right] = results(entries);
+		expect(left).toMatchObject({ toolCallId: "c1", toolName: "echo", isError: true });
+		expect(right).toMatchObject({ toolCallId: "c2", toolName: "echo", isError: true });
+		expect(resultText(left!)).toBe(`<harness>\n[error] ${TRUNCATED}\n</harness>`);
+		const again = await (await root.submit({ type: "input", content: "again" }, context)).wait(context);
+		expect(again.status).toBe("done");
+		expect(followup).toContain("truncated (max output tokens)");
+		await harness.close(context);
+	});
+
+	it("records an error for tool calls on a stop answer and does not run them", async () => {
+		const setup = chatSetup();
+		const executed: string[] = [];
+		addTool(
+			setup.registry,
+			tool("echo", async () => {
+				executed.push("ran");
+				return { output: [] };
+			}),
+		);
+		const { harness, entries, status } = await run(setup, [
+			fauxAssistantMessage([fauxToolCall("echo", { text: "hi" }, { id: "c1" })], { stopReason: "stop" }),
+		]);
+		expect(status).toBe("done");
+		expect(executed).toEqual([]);
+		expect(resultText(results(entries)[0]!)).toBe(
+			"<harness>\n[error] Tool call was not executed because the response ended with stop reason stop\n</harness>",
+		);
+		await harness.close(context);
+	});
+});

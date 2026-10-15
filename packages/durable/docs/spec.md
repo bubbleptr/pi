@@ -3383,7 +3383,7 @@ retain their tool-result entry ID for the generation's `tools` phase.
 
 Error results the Harness writes itself set `isError` and carry an `error`
 diagnostic with one of the codes `tool_unavailable`, `invalid_arguments`,
-`blocked`, `interrupted`, `aborted`, or `tool_error` (a throw from `execute()`)
+`blocked`, `interrupted`, `aborted`, `not_executed`, or `tool_error` (a throw from `execute()`)
 and the error text as its message. Their content is the durable partial output,
 if any, and `details` is the tool's last reported value, if any.
 
@@ -4015,13 +4015,15 @@ The run's inputs live in `pi.live.run`, not in the task input.
   terminal message is classified in one commit that also clears the partial:
   - `stop`/`length`: before the commit, the `onYield` chain runs; the first
     `{ continue }` wins. The commit appends the answer and applies the final
-    boundary (section 6). With a continuation and no selected user item or
-    reset, it appends a `pi.user` entry with the continuation content, creates a
-    successor generation, and hands it `pi.live.run`, keeping the inputs open.
-    Otherwise it settles the run's inputs `done`, removes `run` and
-    `generation`, and starts a successor run for the selected user items, if
-    any; a dropped continuation is not retried. Both complete with
-    `{ entryId }`.
+    boundary (section 6). Tool calls on the answer are not executed; the same
+    commit writes a `not_executed` error result for each. A `length` stop says
+    the response was truncated at max output tokens. With a continuation and no
+    selected user item or reset, it appends a `pi.user` entry with the
+    continuation content, creates a successor generation, and hands it
+    `pi.live.run`, keeping the inputs open. Otherwise it settles the run's
+    inputs `done`, removes `run` and `generation`, and starts a successor run
+    for the selected user items, if any; a dropped continuation is not retried.
+    Both complete with `{ entryId }`.
   - `toolUse` with at least one tool call: the commit appends the assistant
     entry and starts the tool round described below, moving to `waiting` in the
     `tools` phase. A `toolUse` message without calls is classified like `stop`.

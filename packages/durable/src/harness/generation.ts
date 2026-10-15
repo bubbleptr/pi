@@ -481,6 +481,10 @@ async function classify(
 	if (message.stopReason === "toolUse" && calls.length > 0) {
 		return startToolRound(runtime, request, message, calls, context);
 	}
+	// stop and length are replayed. Answer any tool calls so the next request does not have to invent a result.
+	if (calls.length > 0 && (message.stopReason === "stop" || message.stopReason === "length")) {
+		return answer(runtime, message, context, calls);
+	}
 	if (message.stopReason === "stop" || message.stopReason === "length" || message.stopReason === "toolUse") {
 		return answer(runtime, message, context);
 	}
@@ -537,9 +541,15 @@ async function classify(
 /**
  * A final answer; the final boundary places queued items (spec §6). The first `onYield` continuation appends a user
  * message and hands the run to a successor generation, but only when the boundary selected no user item and no reset.
- * Otherwise the run's inputs settle `done`, and selected user items start the next run.
+ * Otherwise the run's inputs settle `done`, and selected user items start the next run. `unexecuted` calls, from a
+ * `stop` or `length` answer, get `not_executed` results in the same commit; they are not run.
  */
-async function answer(runtime: Runtime, message: AssistantMessage, context: Context): Promise<void> {
+async function answer(
+	runtime: Runtime,
+	message: AssistantMessage,
+	context: Context,
+	unexecuted?: readonly ToolCall[],
+): Promise<void> {
 	let continuation: UserInput | undefined;
 	await runtime.hooks.each("onYield", async (hook) => {
 		if (continuation !== undefined) return;
@@ -551,6 +561,14 @@ async function answer(runtime: Runtime, message: AssistantMessage, context: Cont
 		const boundary = await prepareBoundary(tx, conversationId, runtime.settings);
 		const live = await tx.doc(LiveDoc, conversationId);
 		const entry = await appendAssistant(tx, conversationId, message);
+		if (unexecuted !== undefined && unexecuted.length > 0) {
+			const text = unexecutedToolMessage(message.stopReason);
+			for (const call of unexecuted) {
+				await appendToolResult(tx, conversationId, call, harnessError("not_executed", text), {
+					timestamp: runtime.now(),
+				});
+			}
+		}
 		const result: Next = { status: "terminal", outcome: { status: "completed", result: { entryId: entry.id } } };
 		const { users, reset } = await applyBoundary(tx, boundary, "final", runtime.now());
 		if (continuation !== undefined && users.length === 0 && !reset) {
@@ -564,6 +582,17 @@ async function answer(runtime: Runtime, message: AssistantMessage, context: Cont
 		if (users.length > 0) await startRun(tx, conversationId, live, users);
 		return result;
 	}, context);
+}
+
+/** Why a tool call on a replayed non-toolUse answer was not run. A length stop may have cut the arguments off. */
+function unexecutedToolMessage(stopReason: AssistantMessage["stopReason"]): string {
+	if (stopReason === "length") {
+		return (
+			"Tool call was not executed because the response was truncated (max output tokens). " +
+			"Re-issue the tool call with complete arguments."
+		);
+	}
+	return `Tool call was not executed because the response ended with stop reason ${stopReason}`;
 }
 
 /**
