@@ -11,6 +11,7 @@ import type {
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
 const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
+const MISSING_TOOL_RESULT_TEXT = "Tool call was not executed because no result was recorded for it.";
 
 function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], placeholder: string): TextContent[] {
 	const result: TextContent[] = [];
@@ -155,8 +156,9 @@ export function transformMessages<TApi extends Api>(
 		return msg;
 	});
 
-	// Second pass: insert synthetic empty tool results for orphaned tool calls
-	// This preserves thinking signatures and satisfies API requirements
+	// Second pass: insert synthetic error results for orphaned tool calls.
+	// This preserves thinking signatures and satisfies API requirements. The text says the call was not
+	// executed, so a later turn does not look like a tool that returned nothing.
 	const result: Message[] = [];
 	let pendingToolCalls: ToolCall[] = [];
 	let existingToolResultIds = new Set<string>();
@@ -172,7 +174,7 @@ export function transformMessages<TApi extends Api>(
 						role: "toolResult",
 						toolCallId: tc.id,
 						toolName: tc.name,
-						content: [{ type: "text", text: "No result provided" }],
+						content: [{ type: "text", text: MISSING_TOOL_RESULT_TEXT }],
 						isError: true,
 						timestamp: Date.now(),
 					} as ToolResultMessage);
